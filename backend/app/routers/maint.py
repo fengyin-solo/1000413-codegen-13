@@ -14,6 +14,7 @@ service = MaintService()
 
 LIST_FIELDS = ["检修单号", "关联设备", "检修类型", "计划开始日", "实际完成日", "检修人员", "验收人员", "检修状态"]
 STATUSES = ["待受理", "检修中", "待验收", "已验收"]
+ARCHIVE_STATUSES = ["待确认", "待整改", "待归档", "已归档"]
 
 
 @router.get("", response_model=PageResult[dict])
@@ -28,6 +29,66 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+# 固定路径必须排在 /{entry_id} 之前，否则 archives、export 会被当成检修单 id
+@router.get("/archives", response_model=PageResult[dict])
+def list_archives(
+    keyword: str | None = Query(default=None, description="按检修单号检索"),
+    status: str | None = Query(default=None, description="待确认、待整改、待归档、已归档"),
+    page: int = 1,
+    size: int = 20,
+) -> PageResult[dict]:
+    """验收材料批次列表：整组进度由条目实时汇总，与实际条目保持一致。"""
+    if size > 200:
+        raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
+    items, total = service.list_archives(keyword=keyword, status=status, page=page, size=size)
+    return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.post("/archives", response_model=ActionResult)
+def submit_archive(payload: EntryPayload) -> ActionResult:
+    """按检修单号把设备照片与检测报告一次批量报送；重复报送、材料缺失都会说明理由。"""
+    entry, message = service.submit_archive(payload.values)
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.get("/archives/{batch_id}", response_model=dict)
+def get_archive(batch_id: int) -> dict:
+    """读取单个归档批次明细，含全部材料条目。"""
+    entry = service.get_archive(batch_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"归档批次 {batch_id} 不存在")
+    return entry
+
+
+@router.post("/archives/{batch_id}/actions", response_model=ActionResult)
+def run_archive_action(batch_id: int, payload: EntryPayload) -> ActionResult:
+    """整组归档；验收人未签、材料未确认完或有驳回条目时拦下并说明原因。"""
+    action = str(payload.values.get("action") or "").strip()
+    entry, message = service.run_archive_action(batch_id, action, payload.values)
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.post("/archives/{batch_id}/items/{item_id}/actions", response_model=ActionResult)
+def run_archive_item_action(batch_id: int, item_id: int, payload: EntryPayload) -> ActionResult:
+    """逐条确认/驳回材料，或把被驳回的材料重新报送；缺材料、格式不对单条处理。"""
+    action = str(payload.values.get("action") or "").strip()
+    entry, message = service.run_archive_item_action(batch_id, item_id, action, payload.values)
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出设备检修清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "maint", "total": total, "items": items}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -56,10 +117,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出设备检修清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "maint", "total": total, "items": items}
