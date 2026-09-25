@@ -28,6 +28,15 @@ class EntryPayload(BaseModel):
     remark: str | None = None
 
 
+class ArchiveResult(BaseModel):
+    """验收材料归档动作结果：整组成功失败、总述理由与逐条问题清单。"""
+
+    ok: bool
+    message: str
+    group: dict[str, Any] | None = None
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
 
 class PlantEntry(BaseModel):
     """工艺单元明细结构。"""
